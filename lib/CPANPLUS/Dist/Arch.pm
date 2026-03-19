@@ -6,7 +6,7 @@ use strict;
 use CPANPLUS::Dist::Base   qw();
 use Exporter               qw(import);
 
-our $VERSION     = '1.32';
+our $VERSION     = '1.33';
 our @EXPORT      = qw();
 our @EXPORT_OK   = qw(dist_pkgname dist_pkgver);
 our %EXPORT_TAGS = ( 'all' => [ @EXPORT_OK ] );
@@ -32,9 +32,10 @@ use Cwd                    qw();
 # CLASS CONSTANTS
 #-----------------------------------------------------------------------------
 
+my $PERL5_LIC = "'PerlArtistic' 'GPL'";
 
 my $MKPKGCONF_FQP = '/etc/makepkg.conf';
-my $CPANURL       = 'http://search.cpan.org';
+my $CPANURL       = 'https://search.cpan.org';
 my $ROOT_USER_ID  = 0;
 
 my $CFG_VALUE_MATCH  = '\A \s* (%s) \s* = \s* (.*?) \s* (?: \#.* )? \z';
@@ -79,6 +80,49 @@ TermReadKey    = perl-term-readkey
 
 END_OVERRIDES
 
+my $LICENSE_MAP =
+{ map { split /\s*=\s*/ } split /\s*\n+\s*/, <<'END_LICENSES' };
+
+perl_5      = 'PerlArtistic' 'GPL'
+
+apache_1_1  = 'Apache 1.1'
+apache_2_0  = 'Apache 2.0'
+artistic_1  = 'PerlArtistic'
+artistic_2  = 'Artistic2.0'
+agpl_3      = 'AGPL3'
+gpl_2       = 'GPL2'
+gpl_3       = 'GPL3'
+lgpl_2_1    = 'LGPL2'
+lgpl_3_0    = 'LGPL3'
+gfdl_1_2    = 'FDL1.2'
+gfdl_1_3    = 'FDL1.3'
+mozilla_1_0 = 'MPL 1.0'
+mozilla_1_1 = 'MPL 1.1'
+
+gpl_1       = 'custom:GPLv1'
+openssl     = 'custom:OpenSSL License'
+qpl_1_0     = 'custom:Q Public License, Version 1.0'
+ssleay      = 'custom:Original SSLeay License'
+sun         = 'custom:Sun Internet Standards Source License (SISSL)'
+
+bsd         = 'BSD'
+freebsd     = 'BSD'
+mit         = 'MIT'
+zlib        = 'ZLIB'
+
+perl        = 'PerlArtistic' 'GPL'
+apache      = 'Apache 2.0'
+artistic    = 'PerlArtistic'
+lgpl        = 'LGPL2'
+lgpl2       = 'LGPL2'
+lgpl3       = 'LGPL3'
+gpl         = 'GPL'
+gpl2        = 'GPL2'
+gpl3        = 'GPL3'
+mozilla     = 'MPL 1.1'
+
+END_LICENSES
+
 # This var tells us whether to use a template module or our internal code:
 my $TT_MOD_NAME;
 my @TT_MOD_SEARCH = qw/ Template Template::Alloy Template::Tiny /;
@@ -104,8 +148,8 @@ pkgver='[% pkgver %]'
 pkgrel='[% pkgrel %]'
 pkgdesc="[% pkgdesc %]"
 arch=([% arch %])
-license=('PerlArtistic' 'GPL')
-options=('!emptydirs')
+license=([% license %])
+options=('!emptydirs' 'purge')
 depends=([% depends %])
 makedepends=([% makedepends %])
 [% IF checkdepends -%]
@@ -119,6 +163,9 @@ source=('[% source %]')
 md5sums=('[% md5sums %]')
 [% IF sha512sums -%]
 sha512sums=('[% sha512sums %]')
+[% END -%]
+[% IF b2sums -%]
+b2sums=('[% b2sums %]')
 [% END -%]
 _distdir="[% distdir %]"
 
@@ -162,7 +209,7 @@ package() {
   /usr/bin/perl Build install
 [% END -%]
 
-  find "$pkgdir" -name .packlist -o -name perllocal.pod -delete
+  find "$pkgdir" "(" -name .packlist -o -name perllocal.pod ")" -delete
 }
 
 # Local Variables:
@@ -284,6 +331,7 @@ sub init
     $self->status->mk_accessors( qw{ pkgname  pkgver  pkgbase pkgdesc
                                      pkgurl   pkgsize arch    pkgrel
                                      builddir destdir metareqs
+                                     license
 
                                      pkgbuild_templ tt_init_args } );
 
@@ -689,6 +737,7 @@ sub get_pkgvars
                 pkgrel   => $status->pkgrel,
                 arch     => $status->arch,
                 pkgdesc  => $status->pkgdesc,
+                license  => $status->license,
                 url      => $self->_get_disturl,
                 source   => $self->_get_srcurl,
                 md5sums  => $self->_calc_tarballmd5,
@@ -696,6 +745,9 @@ sub get_pkgvars
     );
     if (eval { require Digest::SHA }) {
         $vars{'sha512sums'} = $self->_calc_shasum(512);
+    }
+    if (eval { require Crypt::Digest::BLAKE2b_512 }) {
+        $vars{'b2sums'} = $self->_calc_b2sum();
     }
 
     $vars{$_} = _specstr($pkglinks->{$_}) for (qw/depends makedepends/);
@@ -775,6 +827,8 @@ sub get_pkgbuild
 
     my %pkgvars = $self->get_pkgvars;
 
+    # Trim extra whitespace
+    $pkgvars{pkgdesc} =~ s/\A\s+|\s+\z//g;
     # Quote our package desc for bash.
     $pkgvars{pkgdesc} =~ s/ ([\$\"\`]) /\\$1/gxms;
 
@@ -790,7 +844,7 @@ sub get_pkgbuild
           $dist_type eq 'CPANPLUS::Dist::Build' ? (0, 1) :
           die "unknown Perl module installer type: '$dist_type'" );
 
-    my $templ_text = $status->pkgbuild_templ || $PKGBUILD_TEMPL;
+    my $templ_text = $self->get_pkgbuild_templ;
 
     return scalar $self->_process_template( $templ_text, $templ_vars );
 }
@@ -1563,12 +1617,37 @@ sub _metadesc
     my $d = $meta->{'abstract'} or return undef;
 
     # META.yml abstract entries we should ignore.
-    my @bad = ( q{~}, 'Module abstract (<= 44 characters) goes here' );
+    my @bad = ( q{~}, 'Module abstract (<= 44 characters) goes here', 'unknown' );
     for my $b ( @bad ) {
         return if ( $d eq $b );
     }
     return $d;
-    
+}
+
+sub _metalic
+{
+    my ($meta) = @_;
+    my $lic_str = $meta->{'x_spdx_expression'} || "";
+
+    return "'$lic_str'" if $lic_str;
+
+    # Some very old, pre-standard metafiles don't have this key at all...
+    return unless $meta->{'license'};
+
+    # And depending on the spec version, it may be a string or an array
+    my $lics = ref $meta->{'license'} eq 'ARRAY' ?
+        $meta->{'license'} :
+        [$meta->{'license'}];
+
+    for my $l (@$lics) {
+        next unless $l;
+        $l = $LICENSE_MAP->{$l};
+        next unless $l;
+        $lic_str .= " " if $lic_str;
+        $lic_str .= "$l";
+    }
+
+    return $lic_str;
 }
 
 #--- PRIVATE METHOD ---
@@ -1587,8 +1666,10 @@ sub _scanmeta
 
     my $reqs = _metareqs($meta);
     my $desc = _metadesc($meta);
+    my $lic  = _metalic($meta);
     $status->metareqs($reqs);
     $status->pkgdesc($desc);
+    $status->license($lic) if $lic;
     return;
 }
 
@@ -1623,6 +1704,7 @@ sub _prepare_status
     $status->pkgver ( $pkgver  );
     $status->pkgbase( $pkgbase );
     $status->pkgrel (    1     );
+    $status->license($PERL5_LIC);
 
     $status->tt_init_args( {} );
 
@@ -1706,6 +1788,23 @@ sub _calc_shasum
     die "failed to get sha${size}sum of $fqp:\n$EVAL_ERROR";
 }
 
+#---INSTANCE METHOD---
+# Usage    : my $b2sum = $self->calc_b2sum();
+# Purpose  : Calculates the BLAKE2b 512-bit digest (b2sum).
+# Throws   : failed to get b2sum of <tarball>:\n...
+# Returns  : Hex-string checksum of the tarball.
+#---------------------
+sub _calc_b2sum
+{
+    my ($self) = @_;
+    my $module = $self->parent;
+    my $fqp    = $module->_status->fetch;
+    my $sum    = eval {
+        Crypt::Digest::BLAKE2b_512->new->addfile( $fqp )->hexdigest;
+    };
+    return $sum if $sum;
+    die "failed to get b2sum of $fqp:\n$EVAL_ERROR";
+}
 
 #---HELPER FUNCTION---
 # Purpose : Split the text into everything before the tags, inside tags, and

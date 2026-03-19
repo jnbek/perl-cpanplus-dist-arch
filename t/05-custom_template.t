@@ -41,6 +41,7 @@ depends = 'perl>=5.010'
 distdir = Template-Tester-1.342
 is_makemaker = 0
 is_modulebuild = 1
+license = 'PerlArtistic' 'GPL'
 makedepends = 
 md5sums = 12345MD5SUM12345
 packager = $CPANPLUS::Dist::Arch::PACKAGER
@@ -49,7 +50,7 @@ pkgname = perl-template-tester
 pkgrel = 1
 pkgver = 1.342
 sha512sums = 12345SHA512SUM12345
-source = http://search.cpan.org/CPAN/J/JU/JUSTER/Template-Tester-1.342.tar.gz
+source = https://search.cpan.org/CPAN/J/JU/JUSTER/Template-Tester-1.342.tar.gz
 url = https://metacpan.org/release/Template-Tester
 version = $CPANPLUS::Dist::Arch::VERSION
 END_OUTPUT
